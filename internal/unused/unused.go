@@ -41,24 +41,54 @@ var sourceExts = map[string]bool{
 
 // Config file patterns that may reference packages as plugins/presets.
 var configFilePatterns = []string{
+	// ESLint
 	".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json", ".eslintrc.yml", ".eslintrc.yaml",
-	"eslint.config.js", "eslint.config.mjs", "eslint.config.cjs",
-	"babel.config.js", "babel.config.cjs", "babel.config.json", ".babelrc", ".babelrc.js", ".babelrc.cjs",
-	"webpack.config.js", "webpack.config.cjs", "webpack.config.ts",
-	"jest.config.js", "jest.config.cjs", "jest.config.ts", "jest.config.json",
+	"eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts",
+	// Babel
+	"babel.config.js", "babel.config.cjs", "babel.config.json", "babel.config.ts",
+	".babelrc", ".babelrc.js", ".babelrc.cjs",
+	// Webpack
+	"webpack.config.js", "webpack.config.cjs", "webpack.config.ts", "webpack.config.mjs",
+	// Jest
+	"jest.config.js", "jest.config.cjs", "jest.config.ts", "jest.config.mjs", "jest.config.json",
+	// TypeScript
 	"tsconfig.json", "tsconfig.build.json",
+	// Prettier
 	".prettierrc", ".prettierrc.js", ".prettierrc.cjs", ".prettierrc.json",
-	"postcss.config.js", "postcss.config.cjs", "postcss.config.mjs",
+	// PostCSS
+	"postcss.config.js", "postcss.config.cjs", "postcss.config.mjs", "postcss.config.ts",
+	// Vite
 	"vite.config.js", "vite.config.ts", "vite.config.mjs",
+	// Next.js
 	"next.config.js", "next.config.mjs", "next.config.ts",
-	"tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs",
+	// Tailwind
+	"tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs", "tailwind.config.mjs",
+	// Rollup
 	"rollup.config.js", "rollup.config.mjs", "rollup.config.ts",
+	// Vitest
 	"vitest.config.js", "vitest.config.ts", "vitest.config.mjs",
-	".stylelintrc", ".stylelintrc.js", ".stylelintrc.json",
-	".commitlintrc", ".commitlintrc.js", ".commitlintrc.json", "commitlint.config.js",
-	".lintstagedrc", ".lintstagedrc.js", "lint-staged.config.js",
-	".huskyrc", ".huskyrc.js",
+	// Stylelint
+	".stylelintrc", ".stylelintrc.js", ".stylelintrc.json", ".stylelintrc.ts",
+	// Commitlint
+	".commitlintrc", ".commitlintrc.js", ".commitlintrc.cjs", ".commitlintrc.json",
+	".commitlintrc.ts", ".commitlintrc.yaml", ".commitlintrc.yml",
+	"commitlint.config.js", "commitlint.config.cjs", "commitlint.config.ts", "commitlint.config.mjs",
+	// Lint-staged
+	".lintstagedrc", ".lintstagedrc.js", ".lintstagedrc.cjs", ".lintstagedrc.json",
+	".lintstagedrc.ts", ".lintstagedrc.yaml", ".lintstagedrc.yml",
+	"lint-staged.config.js", "lint-staged.config.cjs", "lint-staged.config.ts", "lint-staged.config.mjs",
+	// Husky
+	".huskyrc", ".huskyrc.js", ".huskyrc.json",
+	// Nodemon
+	"nodemon.json", ".nodemonrc", ".nodemonrc.json",
+	// Turbo
 	"turbo.json",
+	// Mocha
+	".mocharc.js", ".mocharc.cjs", ".mocharc.yaml", ".mocharc.yml", ".mocharc.json",
+	// NYC / Istanbul
+	".nycrc", ".nycrc.json", ".nycrc.yaml", ".nycrc.yml",
+	// Sonar
+	"sonar-project.properties",
 }
 
 // Directories to skip during scanning.
@@ -134,22 +164,33 @@ func Scan() (ScanResult, error) {
 
 	// 3. Scan package.json scripts for CLI tool references
 	for _, script := range pkg.Scripts {
-		for name := range allDeps {
-			// Check if the package name (or its binary name) appears in the script
-			baseName := name
-			if strings.HasPrefix(name, "@") {
-				parts := strings.SplitN(name, "/", 2)
-				if len(parts) == 2 {
-					baseName = parts[1]
-				}
+		markCLIReferences(script, allDeps, used)
+	}
+
+	// 4. Scan .husky/ hooks for package references (npx commitlint, npx lint-staged, etc.)
+	huskyDir := ".husky"
+	if entries, err := os.ReadDir(huskyDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+				continue
 			}
-			if strings.Contains(script, baseName) {
-				used[name] = true
+			hookPath := filepath.Join(huskyDir, entry.Name())
+			if data, err := os.ReadFile(hookPath); err == nil {
+				scannedFiles++
+				content := string(data)
+				// Check each line of the hook script for package references
+				for _, line := range strings.Split(content, "\n") {
+					line = strings.TrimSpace(line)
+					if line == "" || strings.HasPrefix(line, "#") {
+						continue
+					}
+					markCLIReferences(line, allDeps, used)
+				}
 			}
 		}
 	}
 
-	// 4. Special handling
+	// 5. Special handling
 	hasTypeScript := hasFileWithExt(".ts", ".tsx")
 
 	for name := range allDeps {
@@ -192,6 +233,22 @@ func Scan() (ScanResult, error) {
 	sortUnused(result.Unused)
 
 	return result, nil
+}
+
+// markCLIReferences checks if any dependency name (or its binary name) appears in a script/command string.
+func markCLIReferences(script string, allDeps map[string]string, used map[string]bool) {
+	for name := range allDeps {
+		baseName := name
+		if strings.HasPrefix(name, "@") {
+			parts := strings.SplitN(name, "/", 2)
+			if len(parts) == 2 {
+				baseName = parts[1]
+			}
+		}
+		if strings.Contains(script, baseName) {
+			used[name] = true
+		}
+	}
 }
 
 // extractImports scans a file for require/import statements and adds package names to used.

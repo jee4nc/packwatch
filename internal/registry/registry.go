@@ -24,9 +24,10 @@ const (
 type PackageVersions struct {
 	Name     string
 	Latest   semver.Version
-	Versions []semver.Version  // all published versions, sorted ascending
-	Engines  map[string]string // version string → node engines constraint
-	Registry string            // registry URL this was fetched from
+	Versions []semver.Version            // all published versions, sorted ascending
+	Engines  map[string]string           // version string → node engines constraint
+	PeerDeps map[string]map[string]string // version string → peer dep name → constraint
+	Registry string                      // registry URL this was fetched from
 	Error    error
 }
 
@@ -37,8 +38,9 @@ type registryResponse struct {
 }
 
 type registryVersion struct {
-	Version string          `json:"version"`
-	Engines json.RawMessage `json:"engines"`
+	Version          string            `json:"version"`
+	Engines          json.RawMessage   `json:"engines"`
+	PeerDependencies map[string]string `json:"peerDependencies"`
 }
 
 // parseNodeEngine extracts the "node" engine constraint from a raw engines field.
@@ -125,7 +127,7 @@ func fetchWithRetry(client *http.Client, name, registryURL, authToken string) Pa
 }
 
 func fetchOne(client *http.Client, name, registryURL, authToken string) PackageVersions {
-	result := PackageVersions{Name: name, Engines: make(map[string]string), Registry: registryURL}
+	result := PackageVersions{Name: name, Engines: make(map[string]string), PeerDeps: make(map[string]map[string]string), Registry: registryURL}
 
 	url := fmt.Sprintf("%s/%s", registryURL, name)
 	req, err := http.NewRequest("GET", url, nil)
@@ -188,6 +190,9 @@ func fetchOne(client *http.Client, name, registryURL, authToken string) PackageV
 		if nodeEngine := parseNodeEngine(verData.Engines); nodeEngine != "" {
 			result.Engines[v.String()] = nodeEngine
 		}
+		if len(verData.PeerDependencies) > 0 {
+			result.PeerDeps[v.String()] = verData.PeerDependencies
+		}
 	}
 
 	// Sort versions ascending
@@ -220,6 +225,32 @@ func FindCompatibleLatest(pv PackageVersions, nodeVersion semver.Version) (semve
 			return v, true
 		}
 		if semver.SatisfiesConstraints(nodeVersion, constraint) {
+			return v, true
+		}
+	}
+	return semver.Version{}, false
+}
+
+// FindPeerCompatibleLatest finds the latest version that satisfies both the Node engine
+// constraint and all given peer dependency constraints from other installed packages.
+func FindPeerCompatibleLatest(pv PackageVersions, nodeVersion semver.Version, peerConstraints []string) (semver.Version, bool) {
+	for i := len(pv.Versions) - 1; i >= 0; i-- {
+		v := pv.Versions[i]
+		// Check Node engine compatibility
+		if constraint, has := pv.Engines[v.String()]; has {
+			if !semver.SatisfiesConstraints(nodeVersion, constraint) {
+				continue
+			}
+		}
+		// Check all peer dependency constraints
+		allSatisfied := true
+		for _, constraint := range peerConstraints {
+			if !semver.SatisfiesConstraints(v, constraint) {
+				allSatisfied = false
+				break
+			}
+		}
+		if allSatisfied {
 			return v, true
 		}
 	}
