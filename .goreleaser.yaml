@@ -1,0 +1,77 @@
+version: 2
+
+project_name: packwatch
+
+before:
+  hooks:
+    - go mod tidy
+    - go test -race ./...
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.buildDate={{.Date}}
+
+archives:
+  - format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^style:"
+      - "^chore\\(deps\\):"
+
+brews:
+  - repository:
+      owner: jee4nc
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/jee4nc/packwatch
+    description: Interactive CLI to check and update outdated npm packages with Node version awareness
+    license: MIT
+    dependencies:
+      - name: node
+    install: |
+      bin.install "packwatch"
+    test: |
+      system "#{bin}/packwatch", "--version"
+
+scoops:
+  - repository:
+      owner: jee4nc
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/jee4nc/packwatch
+    description: Interactive CLI to check and update outdated npm packages with Node version awareness
+    license: MIT
+
+nfpms:
+  - package_name: packwatch
+    homepage: https://github.com/jee4nc/packwatch
+    maintainer: jee4nc
+    description: Interactive CLI to check and update outdated npm packages with Node version awareness
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    contents:
+      - src: ./LICENSE
+        dst: /usr/share/doc/packwatch/LICENSE
