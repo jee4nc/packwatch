@@ -35,9 +35,9 @@ var (
 
 	DimGreen = lipgloss.NewStyle().Foreground(colorDimGreen)
 
-	BoldCyan   = lipgloss.NewStyle().Bold(true).Foreground(colorCyan)
-	BoldGreen  = lipgloss.NewStyle().Bold(true).Foreground(colorGreen)
-	BoldYellow = lipgloss.NewStyle().Bold(true).Foreground(colorYellow)
+	BoldCyan    = lipgloss.NewStyle().Bold(true).Foreground(colorCyan)
+	BoldGreen   = lipgloss.NewStyle().Bold(true).Foreground(colorGreen)
+	BoldYellow  = lipgloss.NewStyle().Bold(true).Foreground(colorYellow)
 	BoldRed     = lipgloss.NewStyle().Bold(true).Foreground(colorRed)
 	BoldMagenta = lipgloss.NewStyle().Bold(true).Foreground(colorMagenta)
 

@@ -238,9 +238,9 @@ func TestExpandCaret(t *testing.T) {
 
 func TestExtractMinNodeVersion(t *testing.T) {
 	tests := []struct {
-		input   string
-		want    string
-		wantOk  bool
+		input  string
+		want   string
+		wantOk bool
 	}{
 		{">=14.0.0", "14.0.0", true},
 		{">=16 || >=18", "16.0.0", true},

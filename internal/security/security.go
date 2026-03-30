@@ -80,11 +80,11 @@ type osvVulnRef struct {
 }
 
 type osvVulnDetail struct {
-	ID               string            `json:"id"`
-	Summary          string            `json:"summary"`
-	Severity         []osvSeverity     `json:"severity"`
+	ID               string                 `json:"id"`
+	Summary          string                 `json:"summary"`
+	Severity         []osvSeverity          `json:"severity"`
 	DatabaseSpecific map[string]interface{} `json:"database_specific"`
-	References       []osvReference    `json:"references"`
+	References       []osvReference         `json:"references"`
 }
 
 type osvSeverity struct {
