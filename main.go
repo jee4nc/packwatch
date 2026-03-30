@@ -18,6 +18,7 @@ import (
 	"github.com/jee4nc/packwatch/internal/semver"
 	"github.com/jee4nc/packwatch/internal/styles"
 	"github.com/jee4nc/packwatch/internal/tui"
+	"github.com/jee4nc/packwatch/internal/unused"
 )
 
 // Set at build time via ldflags.
@@ -33,6 +34,7 @@ func main() {
 	noColor := flag.Bool("no-color", false, "Disable color output")
 	jsonOut := flag.Bool("json", false, "Output JSON (no interactive TUI)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
+	unusedFlag := flag.Bool("unused", false, "Detect unused dependencies")
 	flag.Parse()
 
 	if *showVersion {
@@ -51,6 +53,12 @@ func main() {
 	fmt.Println()
 	fmt.Println(styles.Banner.Render(styles.Emoji("📦 ") + "packwatch " + version))
 	fmt.Println()
+
+	// --unused mode: detect unused dependencies and exit
+	if *unusedFlag {
+		runUnusedMode(*jsonOut)
+		return
+	}
 
 	// 1. Detect Node version
 	nodeDetection, err := node.Detect()
@@ -129,6 +137,7 @@ func main() {
 	// 5. Build items list
 	var items []tui.Item
 	var errors []string
+	upToDateCount := 0
 
 	for i, pkg := range packages {
 		reg := registryResults[i]
@@ -166,23 +175,25 @@ func main() {
 			}
 		}
 
+		if updateType == semver.UpToDate {
+			upToDateCount++
+			continue
+		}
+
 		items = append(items, tui.Item{
 			Name:          pkg.Name,
 			Installed:     pkg.Version.String(),
 			Available:     available,
 			UpdateType:    updateType.String(),
 			IsDev:         pkg.IsDev,
-			Selectable:    updateType != semver.UpToDate,
+			Selectable:    true,
 			NodeWarning:   nodeWarning,
 			CompatVersion: compatVersion,
 		})
 	}
 
-	// Sort: updatable first (major > minor > patch), then up-to-date; alphabetical within group
+	// Sort: prod before dev, alphabetical within group
 	sort.Slice(items, func(i, j int) bool {
-		if items[i].Selectable != items[j].Selectable {
-			return items[i].Selectable
-		}
 		if items[i].IsDev != items[j].IsDev {
 			return !items[i].IsDev // prod first
 		}
@@ -255,7 +266,7 @@ func main() {
 
 	if updateCount == 0 && vulnCount == 0 {
 		fmt.Printf("\n  %s All %d packages are up-to-date!\n",
-			styles.Emoji("✅ "), len(items))
+			styles.Emoji("✅ "), upToDateCount)
 		os.Exit(0)
 	}
 
@@ -385,6 +396,84 @@ func outputJSON(items []tui.Item, nodeVersion string) {
 	}
 }
 
+func runUnusedMode(jsonOut bool) {
+	fmt.Printf("  %sScanning project for unused dependencies...\n",
+		styles.Emoji("🔍 "))
+
+	result, err := unused.Scan()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  %s %s\n", styles.Emoji("❌ "), styles.Red.Render(err.Error()))
+		os.Exit(1)
+	}
+
+	fmt.Printf("  %sScanned %d files — %d direct dependencies\n",
+		styles.Emoji("📂 "),
+		result.ScannedFiles,
+		result.Total)
+
+	if len(result.Unused) == 0 {
+		fmt.Printf("\n  %s All %d dependencies are in use!\n",
+			styles.Emoji("✅ "), result.Total)
+		os.Exit(0)
+	}
+
+	fmt.Printf("\n  %s%s\n",
+		styles.Emoji("📊 "),
+		styles.Bold.Render(fmt.Sprintf("%d unused dependencies found", len(result.Unused))))
+
+	if jsonOut {
+		outputUnusedJSON(result)
+		return
+	}
+
+	// Build TUI items
+	var items []tui.UnusedItem
+	for _, pkg := range result.Unused {
+		items = append(items, tui.UnusedItem{
+			Name:    pkg.Name,
+			Version: pkg.Version,
+		})
+	}
+
+	tui.RunUnused(items, result.Total, result.ScannedFiles)
+}
+
+type jsonUnusedPackage struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type jsonUnusedOutput struct {
+	Version           string              `json:"packwatchVersion"`
+	UnusedPackages    []jsonUnusedPackage `json:"unusedPackages"`
+	TotalDependencies int                 `json:"totalDependencies"`
+	ScannedFiles      int                 `json:"scannedFiles"`
+}
+
+func outputUnusedJSON(result unused.ScanResult) {
+	var pkgs []jsonUnusedPackage
+	for _, p := range result.Unused {
+		pkgs = append(pkgs, jsonUnusedPackage{
+			Name:    p.Name,
+			Version: p.Version,
+		})
+	}
+
+	out := jsonUnusedOutput{
+		Version:           version,
+		UnusedPackages:    pkgs,
+		TotalDependencies: result.Total,
+		ScannedFiles:      result.ScannedFiles,
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(out); err != nil {
+		fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func init() {
 	flag.Usage = func() {
 		w := os.Stderr
@@ -399,6 +488,8 @@ func init() {
 		fmt.Fprintf(w, "  packwatch                  Interactive update selector + security check\n")
 		fmt.Fprintf(w, "  packwatch --prod-only      Only show production dependencies\n")
 		fmt.Fprintf(w, "  packwatch --json           Output updates + vulnerabilities as JSON\n")
+		fmt.Fprintf(w, "  packwatch --unused         Detect unused dependencies\n")
+		fmt.Fprintf(w, "  packwatch --unused --json  Output unused dependencies as JSON\n")
 		fmt.Fprintf(w, "  packwatch --json | jq '.packages[] | select(.vulnCount > 0)'\n")
 		fmt.Fprintf(w, "  packwatch --json | jq '.packages[] | select(.updateType==\"major\")'\n")
 		fmt.Fprintf(w, "\nEnvironment:\n")
