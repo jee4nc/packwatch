@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ secrets.TAGGING_TOKEN }}
+          token: ${{ secrets.TAGGING_TOKEN_PACKWATCH }}
 
       - name: Determine tag version
         id: version
@@ -71,7 +71,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ secrets.TAGGING_TOKEN }}
+          token: ${{ secrets.TAGGING_TOKEN_PACKWATCH }}
 
       - name: Determine next patch version
         id: version
@@ -124,7 +124,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ secrets.TAGGING_TOKEN }}
+          token: ${{ secrets.TAGGING_TOKEN_PACKWATCH }}
 
       - name: Determine next patch version
         id: version
