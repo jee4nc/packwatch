@@ -114,22 +114,29 @@ func TestFetch_ProgressCallback(t *testing.T) {
 		AuthTokens:      make(map[string]string),
 	}
 
-	var lastCompleted, lastTotal int
-	callCount := 0
+	var maxCompleted, lastTotal, callCount int64
 	results := Fetch([]string{"a", "b", "c"}, cfg, func(completed, total int) {
-		lastCompleted = completed
-		lastTotal = total
-		callCount++
+		atomic.AddInt64(&callCount, 1)
+		atomic.StoreInt64(&lastTotal, int64(total))
+		for {
+			cur := atomic.LoadInt64(&maxCompleted)
+			if int64(completed) <= cur {
+				break
+			}
+			if atomic.CompareAndSwapInt64(&maxCompleted, cur, int64(completed)) {
+				break
+			}
+		}
 	})
 
 	if len(results) != 3 {
 		t.Errorf("expected 3 results, got %d", len(results))
 	}
-	if callCount != 3 {
-		t.Errorf("expected 3 progress callbacks, got %d", callCount)
+	if c := atomic.LoadInt64(&callCount); c != 3 {
+		t.Errorf("expected 3 progress callbacks, got %d", c)
 	}
-	if lastCompleted != 3 || lastTotal != 3 {
-		t.Errorf("final progress = (%d, %d), want (3, 3)", lastCompleted, lastTotal)
+	if mc, lt := atomic.LoadInt64(&maxCompleted), atomic.LoadInt64(&lastTotal); mc != 3 || lt != 3 {
+		t.Errorf("max progress = (%d, %d), want (3, 3)", mc, lt)
 	}
 }
 
