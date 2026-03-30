@@ -21,12 +21,14 @@ builds:
       - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.buildDate={{.Date}}
 
 archives:
-  - format: tar.gz
-    name_template: >-
+  - name_template: >-
       {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+    formats:
+      - tar.gz
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
 checksum:
   name_template: checksums.txt
@@ -39,7 +41,7 @@ changelog:
       - "^style:"
       - "^chore\\(deps\\):"
 
-brews:
+homebrew_casks:
   - repository:
       owner: jee4nc
       name: homebrew-tap
