@@ -64,7 +64,11 @@ jobs:
           git push origin "${{ steps.version.outputs.tag }}"
 
   auto-tag-on-push:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release-') && !github.event.created
+    if: >-
+      github.event_name == 'push'
+      && startsWith(github.ref, 'refs/heads/release-')
+      && !github.event.created
+      && !startsWith(github.event.head_commit.message, 'Merge pull request')
     runs-on: ubuntu-latest
 
     steps:

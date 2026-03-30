@@ -41,7 +41,7 @@ changelog:
       - "^style:"
       - "^chore\\(deps\\):"
 
-homebrew_casks:
+brews:
   - repository:
       owner: jee4nc
       name: homebrew-tap
