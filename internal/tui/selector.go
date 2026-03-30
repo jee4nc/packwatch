@@ -26,6 +26,7 @@ type Item struct {
 	Selectable    bool
 	Selected      bool
 	NodeWarning   string
+	PeerWarning   string
 	CompatVersion string
 	VulnCount     int
 	VulnSeverity  string // highest severity: CRITICAL, HIGH, MEDIUM, LOW, UNKNOWN
@@ -257,6 +258,9 @@ func (m model) rowLines(idx int) int {
 	if it.NodeWarning != "" && it.Selectable {
 		lines++
 	}
+	if it.PeerWarning != "" && it.Selectable {
+		lines++
+	}
 	if it.VulnCount > 0 {
 		lines++ // vuln header line
 		if m.expandedVulns[r.itemIdx] {
@@ -370,6 +374,13 @@ func (m model) View() string {
 			b.WriteString(fmt.Sprintf("        %s%s\n",
 				styles.Emoji("⚠️  "),
 				styles.Yellow.Render(it.NodeWarning)))
+		}
+
+		// Peer dependency warning
+		if it.PeerWarning != "" && it.Selectable {
+			b.WriteString(fmt.Sprintf("        %s%s\n",
+				styles.Emoji("🔗 "),
+				styles.Yellow.Render(it.PeerWarning)))
 		}
 
 		// Vulnerability details

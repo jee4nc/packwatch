@@ -67,6 +67,24 @@ func PrintCommands(cmds []Command) {
 	}
 }
 
+// GenerateUninstallCommands creates npm uninstall commands from selected unused items.
+func GenerateUninstallCommands(items []tui.UnusedItem) []Command {
+	var names []string
+	for _, it := range items {
+		names = append(names, it.Name)
+	}
+
+	if len(names) == 0 {
+		return nil
+	}
+
+	args := append([]string{"uninstall"}, names...)
+	return []Command{{
+		Args:    args,
+		Display: "npm " + strings.Join(args, " "),
+	}}
+}
+
 // Execute runs the npm commands with real-time output.
 func Execute(cmds []Command) error {
 	for _, cmd := range cmds {

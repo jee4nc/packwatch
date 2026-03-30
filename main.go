@@ -134,7 +134,33 @@ func main() {
 	})
 	fmt.Println() // newline after progress bar
 
-	// 5. Build items list
+	// 5. Build reverse peer dependency map:
+	//    For each installed package, check what peer constraints it imposes on other packages.
+	//    This lets us warn when updating package A would break package B's peerDependencies.
+	type peerConstraint struct {
+		constraint string
+		source     string // package that imposes this constraint
+	}
+	peerConstraintMap := map[string][]peerConstraint{}
+
+	for i, pkg := range packages {
+		reg := registryResults[i]
+		if reg.Error != nil {
+			continue
+		}
+		peers, ok := reg.PeerDeps[pkg.Version.String()]
+		if !ok {
+			continue
+		}
+		for depName, constraint := range peers {
+			peerConstraintMap[depName] = append(peerConstraintMap[depName], peerConstraint{
+				constraint: constraint,
+				source:     pkg.Name,
+			})
+		}
+	}
+
+	// 6. Build items list
 	var items []tui.Item
 	var errors []string
 	upToDateCount := 0
@@ -149,6 +175,7 @@ func main() {
 		updateType := semver.ClassifyUpdate(pkg.Version, reg.Latest)
 		available := reg.Latest.String()
 		nodeWarning := ""
+		peerWarning := ""
 		compatVersion := ""
 
 		// Check if latest requires newer Node
@@ -175,6 +202,37 @@ func main() {
 			}
 		}
 
+		// Check peer dependency constraints from other installed packages
+		if updateType != semver.UpToDate {
+			if pcs, hasPeerConstraints := peerConstraintMap[pkg.Name]; hasPeerConstraints {
+				candidateVersion, _ := semver.Parse(available)
+				var conflictSources []string
+				for _, pc := range pcs {
+					if !semver.SatisfiesConstraints(candidateVersion, pc.constraint) {
+						conflictSources = append(conflictSources, pc.source)
+					}
+				}
+				if len(conflictSources) > 0 {
+					var constraints []string
+					for _, pc := range pcs {
+						constraints = append(constraints, pc.constraint)
+					}
+					compat, found := registry.FindPeerCompatibleLatest(reg, nodeDetection.Version, constraints)
+					if found && compat.Compare(pkg.Version) > 0 {
+						peerWarning = fmt.Sprintf("latest (%s) breaks peer deps of %s; suggesting %s instead",
+							available, strings.Join(conflictSources, ", "), compat.String())
+						available = compat.String()
+						compatVersion = compat.String()
+						updateType = semver.ClassifyUpdate(pkg.Version, compat)
+					} else if !found {
+						peerWarning = fmt.Sprintf("no compatible version found (peer deps: %s)",
+							strings.Join(conflictSources, ", "))
+						updateType = semver.UpToDate
+					}
+				}
+			}
+		}
+
 		if updateType == semver.UpToDate {
 			upToDateCount++
 			continue
@@ -188,6 +246,7 @@ func main() {
 			IsDev:         pkg.IsDev,
 			Selectable:    true,
 			NodeWarning:   nodeWarning,
+			PeerWarning:   peerWarning,
 			CompatVersion: compatVersion,
 		})
 	}
@@ -340,6 +399,7 @@ type jsonItem struct {
 	UpdateType      string     `json:"updateType"`
 	IsDev           bool       `json:"isDev"`
 	NodeWarning     string     `json:"nodeWarning,omitempty"`
+	PeerWarning     string     `json:"peerWarning,omitempty"`
 	CompatVersion   string     `json:"compatVersion,omitempty"`
 	VulnCount       int        `json:"vulnCount,omitempty"`
 	VulnSeverity    string     `json:"vulnSeverity,omitempty"`
@@ -366,6 +426,7 @@ func outputJSON(items []tui.Item, nodeVersion string) {
 			UpdateType:    it.UpdateType,
 			IsDev:         it.IsDev,
 			NodeWarning:   it.NodeWarning,
+			PeerWarning:   it.PeerWarning,
 			CompatVersion: it.CompatVersion,
 			VulnCount:     it.VulnCount,
 			VulnSeverity:  it.VulnSeverity,
@@ -435,7 +496,33 @@ func runUnusedMode(jsonOut bool) {
 		})
 	}
 
-	tui.RunUnused(items, result.Total, result.ScannedFiles)
+	// Interactive selection
+	tuiResult := tui.RunUnused(items, result.Total, result.ScannedFiles)
+	if tuiResult.Aborted {
+		fmt.Printf("\n  %s Cancelled.\n", styles.Emoji("👋 "))
+		os.Exit(0)
+	}
+
+	if len(tuiResult.Selected) == 0 {
+		fmt.Printf("\n  %s Nothing selected.\n", styles.Emoji("🤷 "))
+		os.Exit(0)
+	}
+
+	// Generate and show commands
+	cmds := runner.GenerateUninstallCommands(tuiResult.Selected)
+	runner.PrintCommands(cmds)
+
+	// Ask to execute
+	if tui.Confirm("Execute these commands?") {
+		if err := runner.Execute(cmds); err != nil {
+			fmt.Fprintf(os.Stderr, "\n  %s %s\n", styles.Emoji("❌ "), styles.Red.Render(err.Error()))
+			os.Exit(1)
+		}
+		fmt.Printf("\n  %s %d unused dependencies removed!\n",
+			styles.Emoji("🎉 "), len(tuiResult.Selected))
+	} else {
+		fmt.Printf("\n  %s Commands not executed. Copy and run them manually.\n", styles.Emoji("📋 "))
+	}
 }
 
 type jsonUnusedPackage struct {
