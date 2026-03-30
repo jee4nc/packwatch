@@ -280,6 +280,12 @@ func extractImports(path string, used map[string]bool) {
 
 // extractStringReferences looks for package names mentioned as plain strings in config files.
 // This catches plugin references like "prettier-plugin-tailwindcss" in config objects.
+// It also resolves ESLint's shorthand naming conventions:
+//   - "eslint-plugin-X" is referenced as "X" in plugins arrays
+//   - "@scope/eslint-plugin" is referenced as "@scope" in plugins arrays
+//   - "@scope/eslint-plugin-X" is referenced as "@scope/X" in plugins arrays
+//   - "eslint-config-X" is referenced as "X" in extends arrays
+//   - "@scope/eslint-config" is referenced as "@scope" in extends arrays
 func extractStringReferences(path string, deps map[string]string, used map[string]bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -289,8 +295,60 @@ func extractStringReferences(path string, deps map[string]string, used map[strin
 	for name := range deps {
 		if strings.Contains(content, name) {
 			used[name] = true
+			continue
+		}
+		// Check ESLint shorthand names
+		for _, short := range eslintShortNames(name) {
+			if strings.Contains(content, short) {
+				used[name] = true
+				break
+			}
 		}
 	}
+}
+
+// eslintShortNames returns the shorthand names ESLint uses for a package.
+// ESLint allows plugins/configs to be referenced without their prefix:
+//   - eslint-plugin-prettier → "prettier"
+//   - @typescript-eslint/eslint-plugin → "@typescript-eslint"
+//   - @scope/eslint-plugin-foo → "@scope/foo"
+//   - eslint-config-airbnb → "airbnb"
+//   - @scope/eslint-config → "@scope"
+func eslintShortNames(pkg string) []string {
+	var names []string
+
+	if strings.HasPrefix(pkg, "@") {
+		// Scoped packages: @scope/eslint-plugin or @scope/eslint-plugin-X or @scope/eslint-config
+		parts := strings.SplitN(pkg, "/", 2)
+		if len(parts) != 2 {
+			return nil
+		}
+		scope, rest := parts[0], parts[1]
+		if rest == "eslint-plugin" {
+			// @scope/eslint-plugin → "@scope"
+			names = append(names, scope)
+		} else if after, ok := strings.CutPrefix(rest, "eslint-plugin-"); ok {
+			// @scope/eslint-plugin-foo → "@scope/foo"
+			names = append(names, scope+"/"+after)
+		}
+		if rest == "eslint-config" {
+			// @scope/eslint-config → "@scope"
+			names = append(names, scope)
+		} else if after, ok := strings.CutPrefix(rest, "eslint-config-"); ok {
+			// @scope/eslint-config-foo → "@scope/foo"
+			names = append(names, scope+"/"+after)
+		}
+	} else {
+		// Unscoped packages
+		if after, ok := strings.CutPrefix(pkg, "eslint-plugin-"); ok {
+			names = append(names, after)
+		}
+		if after, ok := strings.CutPrefix(pkg, "eslint-config-"); ok {
+			names = append(names, after)
+		}
+	}
+
+	return names
 }
 
 // extractPackageName gets the npm package name from an import path.
