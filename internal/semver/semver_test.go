@@ -183,12 +183,17 @@ func TestExpandTilde(t *testing.T) {
 		{"1.2.3", "1.2.3", "1.3.0"},
 		{"0.2.0", "0.2.0", "0.3.0"},
 		{"16.0.0", "16.0.0", "16.1.0"},
+		{"1.2", "1.2.0", "1.3.0"},
+		{"1", "1.0.0", "2.0.0"},
 	}
 
 	for _, tt := range tests {
 		t.Run("~"+tt.input, func(t *testing.T) {
-			v, _ := Parse(tt.input)
-			constraints := expandTilde(v)
+			p, err := parsePartial(tt.input)
+			if err != nil {
+				t.Fatalf("parsePartial(%q) error: %v", tt.input, err)
+			}
+			constraints := expandTilde(p)
 			if len(constraints) != 2 {
 				t.Fatalf("expandTilde(%s) returned %d constraints, want 2", tt.input, len(constraints))
 			}
@@ -215,12 +220,18 @@ func TestExpandCaret(t *testing.T) {
 		{"0.0.3", "0.0.3", "0.0.4"},
 		{"16.0.0", "16.0.0", "17.0.0"},
 		{"0.0.0", "0.0.0", "0.0.1"},
+		{"0.0", "0.0.0", "0.1.0"},
+		{"0", "0.0.0", "1.0.0"},
+		{"1.2", "1.2.0", "2.0.0"},
 	}
 
 	for _, tt := range tests {
 		t.Run("^"+tt.input, func(t *testing.T) {
-			v, _ := Parse(tt.input)
-			constraints := expandCaret(v)
+			p, err := parsePartial(tt.input)
+			if err != nil {
+				t.Fatalf("parsePartial(%q) error: %v", tt.input, err)
+			}
+			constraints := expandCaret(p)
 			if len(constraints) != 2 {
 				t.Fatalf("expandCaret(%s) returned %d constraints, want 2", tt.input, len(constraints))
 			}
@@ -248,6 +259,9 @@ func TestExtractMinNodeVersion(t *testing.T) {
 		{"*", "", false},
 		{"", "", false},
 		{"^16.0.0", "16.0.0", true},
+		{"18 || 20", "18.0.0", true},
+		{"^20.19.0 || >=22.12.0", "20.19.0", true},
+		{"latest", "", false},
 	}
 
 	for _, tt := range tests {
