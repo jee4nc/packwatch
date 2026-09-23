@@ -120,7 +120,8 @@ func parseFile(path string, cfg *Config) {
 	}
 }
 
-// expandEnvVars replaces ${VAR} and $VAR patterns with environment variable values.
+// expandEnvVars replaces ${VAR} patterns with environment variable values (the
+// only syntax npm supports in .npmrc).
 func expandEnvVars(s string) string {
 	// Handle ${VAR} syntax
 	result := s

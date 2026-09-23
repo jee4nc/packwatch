@@ -14,9 +14,9 @@ An interactive CLI that checks your `package-lock.json` for outdated npm package
 2. Reads `.npmrc` for custom registry configuration (scoped registries, auth tokens)
 3. Parses `package-lock.json` (v1/v2/v3) and `package.json` for direct dependencies
 4. Fetches the npm registry concurrently for newer versions
-5. Checks security advisories via the GitHub Advisory Database
+5. Checks security advisories via the [OSV](https://osv.dev) database (includes GitHub Security Advisories)
 6. Presents an interactive TUI to select packages for update
-7. Generates and optionally executes `npm install` commands (splitting prod/dev)
+7. Generates and optionally executes `npm install` commands (splitting prod/dev, keeping each dependency's `^`/`~`/exact range style)
 
 ## Installation
 
@@ -87,6 +87,9 @@ packwatch --json
 # Disable colors
 packwatch --no-color
 
+# Detect unused dependencies
+packwatch --unused
+
 # Show version
 packwatch --version
 ```
@@ -127,9 +130,20 @@ When the latest version of a package requires a newer Node than what's active, p
      latest (15.1.0) requires Node >=18.18.0; suggesting 14.2.28 instead
 ```
 
+The same applies to peer dependencies: if updating a package would break the `peerDependencies` of another installed package, packwatch suggests the newest version that satisfies them. Deprecated versions and versions above the `latest` dist-tag are never suggested.
+
+When you're already on the newest compatible version, the package is listed as held back instead of offering an update that would break:
+
+```
+  ⏸  1 held back by Node/peer constraints:
+    • eslint: latest (10.11.0) requires Node >=20.19.0; already on newest compatible version
+```
+
+A partial version in `.nvmrc` / `.node-version` (e.g. `20`) is resolved like a version manager would: to your active `node` if it's in that line, otherwise to the latest release of that line from nodejs.org.
+
 ## JSON mode
 
-Use `--json` for CI pipelines or scripting:
+Use `--json` for CI pipelines or scripting. Stdout contains only the JSON document; progress and messages go to stderr.
 
 ```bash
 # List all vulnerable packages
