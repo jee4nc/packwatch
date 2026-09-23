@@ -1,6 +1,10 @@
 package security
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -236,5 +240,87 @@ func TestQueryFields(t *testing.T) {
 	}
 	if q.AvailableVersion != "4.19.2" {
 		t.Errorf("expected AvailableVersion=4.19.2, got %s", q.AvailableVersion)
+	}
+}
+
+// fakeOSV serves the OSV batch and vuln-detail endpoints. Installed version
+// 1.0.0 has GHSA-a and GHSA-b; version 2.0.0 still has GHSA-b. When
+// failAvailable is set, batch queries for 2.0.0 return HTTP 500.
+func fakeOSV(t *testing.T, failAvailable bool) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/querybatch", func(w http.ResponseWriter, r *http.Request) {
+		var req osvBatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode batch request: %v", err)
+		}
+		var resp osvBatchResponse
+		for _, q := range req.Queries {
+			switch q.Version {
+			case "1.0.0":
+				resp.Results = append(resp.Results, osvBatchResult{Vulns: []osvVulnRef{{ID: "GHSA-a"}, {ID: "GHSA-b"}}})
+			case "2.0.0":
+				if failAvailable {
+					http.Error(w, "boom", http.StatusInternalServerError)
+					return
+				}
+				resp.Results = append(resp.Results, osvBatchResult{Vulns: []osvVulnRef{{ID: "GHSA-b"}}})
+			default:
+				resp.Results = append(resp.Results, osvBatchResult{})
+			}
+		}
+		json.NewEncoder(w).Encode(resp)
+	})
+	mux.HandleFunc("/v1/vulns/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/v1/vulns/")
+		json.NewEncoder(w).Encode(osvVulnDetail{
+			ID:               id,
+			DatabaseSpecific: map[string]interface{}{"severity": "HIGH"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	oldBatch, oldVuln := osvBatchURL, osvVulnURL
+	osvBatchURL, osvVulnURL = srv.URL+"/v1/querybatch", srv.URL+"/v1/vulns"
+	t.Cleanup(func() { osvBatchURL, osvVulnURL = oldBatch, oldVuln })
+	return srv
+}
+
+func TestCheckFixedByUpdate(t *testing.T) {
+	fakeOSV(t, false)
+
+	results := Check([]Query{{Name: "pkg", InstalledVersion: "1.0.0", AvailableVersion: "2.0.0"}}, nil)
+
+	r := results[0]
+	if len(r.Vulnerabilities) != 2 {
+		t.Fatalf("got %d vulnerabilities, want 2", len(r.Vulnerabilities))
+	}
+	if r.FixedByUpdate != 1 {
+		t.Errorf("FixedByUpdate = %d, want 1", r.FixedByUpdate)
+	}
+	for _, v := range r.Vulnerabilities {
+		if want := v.ID == "GHSA-a"; v.Fixed != want {
+			t.Errorf("%s Fixed = %v, want %v", v.ID, v.Fixed, want)
+		}
+	}
+}
+
+func TestCheckAvailableQueryFailureIsNotFixed(t *testing.T) {
+	fakeOSV(t, true)
+
+	results := Check([]Query{{Name: "pkg", InstalledVersion: "1.0.0", AvailableVersion: "2.0.0"}}, nil)
+
+	r := results[0]
+	if len(r.Vulnerabilities) != 2 {
+		t.Fatalf("got %d vulnerabilities, want 2", len(r.Vulnerabilities))
+	}
+	if r.FixedByUpdate != 0 {
+		t.Errorf("FixedByUpdate = %d, want 0 when the available-version query fails", r.FixedByUpdate)
+	}
+	for _, v := range r.Vulnerabilities {
+		if v.Fixed {
+			t.Errorf("%s marked as fixed although the available-version query failed", v.ID)
+		}
 	}
 }

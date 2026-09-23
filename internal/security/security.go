@@ -13,9 +13,13 @@ import (
 	"time"
 )
 
-const (
+// OSV endpoints; variables so tests can point them at a local server.
+var (
 	osvBatchURL = "https://api.osv.dev/v1/querybatch"
 	osvVulnURL  = "https://api.osv.dev/v1/vulns"
+)
+
+const (
 	batchSize   = 1000
 	concurrency = 10
 	timeout     = 20 * time.Second
@@ -159,6 +163,11 @@ func Check(packages []Query, onProgress ProgressFunc) []PackageResult {
 	if len(availableQueries) > 0 {
 		availResults := batchQueryAll(client, availableQueries)
 		for j, ar := range availResults {
+			// On error, leave the set nil: whether the update fixes anything is unknown,
+			// and an empty set would mark every vulnerability as fixed.
+			if ar.err != nil {
+				continue
+			}
 			idx := availableIdx[j]
 			set := make(map[string]bool)
 			for _, id := range ar.ids {
