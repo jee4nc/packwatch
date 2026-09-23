@@ -152,19 +152,18 @@ func Parse() (ParseResult, error) {
 	return result, nil
 }
 
-// extractPackageName gets the package name from a node_modules path key.
-// e.g., "node_modules/express" → "express"
+// extractPackageName gets the package name of a root-level install from a
+// lockfile "packages" key. Anything else returns "".
 //
-//	"node_modules/@scope/name" → "@scope/name"
-//	"node_modules/a/node_modules/b" → skip (nested dep)
+//	"node_modules/express"                → "express"
+//	"node_modules/@scope/name"            → "@scope/name"
+//	"node_modules/a/node_modules/b"       → "" (nested/transitive dep)
+//	"packages/foo/node_modules/react"     → "" (workspace-local install)
+//	"packages/foo"                        → "" (workspace package)
 func extractPackageName(key string) string {
-	// Skip nested dependencies (transitive)
-	parts := strings.Split(key, "node_modules/")
-	if len(parts) > 2 {
-		return "" // nested dependency, skip
+	name, ok := strings.CutPrefix(key, "node_modules/")
+	if !ok || strings.Contains(name, "node_modules/") {
+		return ""
 	}
-	// Get the last segment
-	name := parts[len(parts)-1]
-	name = strings.TrimSuffix(name, "/")
-	return name
+	return strings.TrimSuffix(name, "/")
 }
