@@ -165,7 +165,10 @@ func main() {
 		plannedInfo = append(plannedInfo, pkg)
 	}
 
-	opts := update.Options{Node: nodeDetection.Version}
+	opts := update.Options{
+		Node:           nodeDetection.Version,
+		TypesNodeMajor: typesNodeMajor(nodeDetection.Version, parsed.ProjectEngines.Node),
+	}
 	decisions := update.Plan(planned, opts)
 
 	// 6. Build items list
@@ -363,6 +366,18 @@ func main() {
 	} else {
 		fmt.Fprintf(out, "\n  %s Commands not executed. Copy and run them manually.\n", styles.Emoji("📋 "))
 	}
+}
+
+// typesNodeMajor returns the Node major @types/node should match: the
+// minimum major allowed by engines.node if declared (the code must run
+// there), otherwise the detected Node major.
+func typesNodeMajor(active semver.Version, engines string) int {
+	if engines != "" {
+		if minNode, ok := semver.ExtractMinNodeVersion(engines); ok && minNode.Major > 0 {
+			return minNode.Major
+		}
+	}
+	return active.Major
 }
 
 type jsonVuln struct {

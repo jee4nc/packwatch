@@ -162,6 +162,52 @@ func TestDecide(t *testing.T) {
 	}
 }
 
+func TestDecideTypesNode(t *testing.T) {
+	versions := []string{"20.1.0", "20.17.0", "22.10.0", "24.0.0", "24.5.2", "25.1.0"}
+	node := mustParse(t, "24.15.0")
+
+	tests := []struct {
+		name          string
+		installed     string
+		major         int
+		wantAvailable string
+		wantType      semver.UpdateType
+		wantWarn      bool
+		wantHeldBack  bool
+	}{
+		{"capped to node major", "20.1.0", 24, "24.5.2", semver.Major, true, false},
+		{"minor within node major", "24.0.0", 24, "24.5.2", semver.Minor, true, false},
+		{"already newest for node major, no noise", "24.5.2", 24, "24.5.2", semver.UpToDate, false, false},
+		{"engines minimum lower than active node", "20.1.0", 20, "20.17.0", semver.Minor, true, false},
+		{"installed above node major is held back", "25.1.0", 24, "25.1.0", semver.UpToDate, true, true},
+		{"no cap configured", "20.1.0", 0, "25.1.0", semver.Major, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := pkg(t, versions, nil)
+			reg.Name = "@types/node"
+			d := Decide(mustParse(t, tt.installed), reg, Options{Node: node, TypesNodeMajor: tt.major}, Env{})
+
+			if d.Available != tt.wantAvailable || d.UpdateType != tt.wantType {
+				t.Errorf("got %s (%s), want %s (%s)", d.Available, d.UpdateType, tt.wantAvailable, tt.wantType)
+			}
+			if (d.NodeWarning != "") != tt.wantWarn {
+				t.Errorf("NodeWarning = %q, want warning: %v", d.NodeWarning, tt.wantWarn)
+			}
+			if d.HeldBack() != tt.wantHeldBack {
+				t.Errorf("HeldBack() = %v, want %v", d.HeldBack(), tt.wantHeldBack)
+			}
+		})
+	}
+
+	// The cap only applies to @types/node
+	reg := pkg(t, versions, nil)
+	reg.Name = "@types/other"
+	if d := Decide(mustParse(t, "20.1.0"), reg, Options{Node: node, TypesNodeMajor: 24}, Env{}); d.Available != "25.1.0" {
+		t.Errorf("@types/other capped to %s, want 25.1.0", d.Available)
+	}
+}
+
 func TestDecideOwnPeerDeps(t *testing.T) {
 	// plugin@2 needs host ^2, but host stays on 1.x: suggest the newest plugin that accepts host 1
 	reg := pkg(t, []string{"1.0.0", "1.4.0", "2.0.0"}, nil)

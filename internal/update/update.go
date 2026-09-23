@@ -24,6 +24,8 @@ type PeerConstraint struct {
 // Options holds project-wide inputs to the decision.
 type Options struct {
 	Node semver.Version
+	// TypesNodeMajor caps @types/node suggestions to this major (0 = no cap).
+	TypesNodeMajor int
 }
 
 // Env describes the other direct dependencies a package must be compatible with.
@@ -67,7 +69,51 @@ func (d Decision) target(installed semver.Version) semver.Version {
 // the active Node and with the peer dependencies of the other packages in env
 // (in both directions).
 func Decide(installed semver.Version, reg registry.PackageVersions, opts Options, env Env) Decision {
-	return decide(installed, reg, opts, env)
+	typesNote := ""
+	if reg.Name == "@types/node" && opts.TypesNodeMajor > 0 {
+		capped, note, held := capTypesNode(installed, reg, opts.TypesNodeMajor)
+		if held != nil {
+			return *held
+		}
+		reg, typesNote = capped, note
+	}
+
+	d := decide(installed, reg, opts, env)
+	if typesNote != "" && d.UpdateType != semver.UpToDate && d.NodeWarning == "" {
+		d.NodeWarning = typesNote
+	}
+	return d
+}
+
+// capTypesNode restricts @types/node to versions whose major is at most the
+// target Node major, since its major tracks the Node API it describes.
+func capTypesNode(installed semver.Version, reg registry.PackageVersions, major int) (registry.PackageVersions, string, *Decision) {
+	if installed.Major > major {
+		return reg, "", &Decision{
+			Available:  reg.Latest.String(),
+			UpdateType: semver.UpToDate,
+			NodeWarning: fmt.Sprintf("installed %s is newer than Node %d; @types/node should match your Node major",
+				installed, major),
+		}
+	}
+	if reg.Latest.Major <= major {
+		return reg, "", nil
+	}
+
+	capped := reg
+	capped.Versions = nil
+	for _, v := range reg.Versions {
+		if v.Major <= major {
+			capped.Versions = append(capped.Versions, v)
+		}
+	}
+	capped.Latest = semver.Version{}
+	if n := len(capped.Versions); n > 0 {
+		capped.Latest = capped.Versions[n-1]
+	}
+	note := fmt.Sprintf("latest (%s) targets Node %d; keeping @types/node on Node %d",
+		reg.Latest, reg.Latest.Major, major)
+	return capped, note, nil
 }
 
 func decide(installed semver.Version, reg registry.PackageVersions, opts Options, env Env) Decision {
