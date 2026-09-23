@@ -141,6 +141,14 @@ When you're already on the newest compatible version, the package is listed as h
 
 A partial version in `.nvmrc` / `.node-version` (e.g. `20`) is resolved like a version manager would: to your active `node` if it's in that line, otherwise to the latest release of that line from nodejs.org.
 
+Peer dependencies are checked in both directions and across the whole plan. Packages that pin each other (e.g. `vitest` and `@vitest/coverage-v8`, `react` and `react-dom`) are evaluated together: if their new versions are compatible with each other, both are suggested and marked *update together*. Selecting one selects its partners, and packwatch adds any missing partner before running `npm install`.
+
+`@types/node` is kept on the Node major your project targets — the minimum major in `engines.node`, or your active Node if not set — since its major version tracks the Node API it describes.
+
+## Private registries
+
+packwatch reads your user and project `.npmrc`: `registry`, scoped registries (`@scope:registry=...`) and `_authToken` entries (with `${ENV_VAR}` expansion). Tokens are matched like npm does: a token configured for a parent path (e.g. `//company.jfrog.io/artifactory/api/npm/`) also applies to every registry below it.
+
 ## JSON mode
 
 Use `--json` for CI pipelines or scripting. Stdout contains only the JSON document; progress and messages go to stderr.
