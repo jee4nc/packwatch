@@ -21,6 +21,7 @@ type Item struct {
 	Name          string
 	Installed     string
 	Available     string
+	Range         string // range declared in package.json, e.g. "^1.2.3"
 	UpdateType    string // "patch", "minor", "major"
 	IsDev         bool
 	Selectable    bool

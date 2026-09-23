@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"github.com/jee4nc/packwatch/internal/styles"
@@ -18,39 +19,76 @@ type Command struct {
 	IsDev   bool
 }
 
-// GenerateCommands creates npm install commands from selected items.
+// exactRe matches a pinned version such as "1.2.3", "=1.2.3" or "v1.2.3-beta.1".
+var exactRe = regexp.MustCompile(`^[=v]*\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`)
+
+// installSpec returns the npm install spec for an item, keeping the style of
+// the range declared in package.json: "^" and "~" are passed explicitly (so
+// npm's save-prefix/save-exact config doesn't rewrite them), and pinned
+// versions need --save-exact. Other ranges fall back to npm's default.
+func installSpec(it tui.Item) (spec string, exact bool) {
+	r := strings.TrimSpace(it.Range)
+	switch {
+	case strings.HasPrefix(r, "^"):
+		return it.Name + "@^" + it.Available, false
+	case strings.HasPrefix(r, "~"):
+		return it.Name + "@~" + it.Available, false
+	case exactRe.MatchString(r):
+		return it.Name + "@" + it.Available, true
+	default:
+		return it.Name + "@" + it.Available, false
+	}
+}
+
+// GenerateCommands creates npm install commands from selected items, split by
+// prod/dev and by whether versions must be saved exactly.
 func GenerateCommands(items []tui.Item) []Command {
-	var prodPkgs, devPkgs []string
+	type group struct {
+		dev, exact bool
+	}
+	order := []group{{false, false}, {false, true}, {true, false}, {true, true}}
+	specs := map[group][]string{}
 
 	for _, it := range items {
-		spec := it.Name + "@" + it.Available
-		if it.IsDev {
-			devPkgs = append(devPkgs, spec)
-		} else {
-			prodPkgs = append(prodPkgs, spec)
-		}
+		spec, exact := installSpec(it)
+		g := group{it.IsDev, exact}
+		specs[g] = append(specs[g], spec)
 	}
 
 	var cmds []Command
-
-	if len(prodPkgs) > 0 {
-		args := append([]string{"install"}, prodPkgs...)
+	for _, g := range order {
+		if len(specs[g]) == 0 {
+			continue
+		}
+		args := []string{"install"}
+		if g.dev {
+			args = append(args, "--save-dev")
+		}
+		if g.exact {
+			args = append(args, "--save-exact")
+		}
+		args = append(args, specs[g]...)
 		cmds = append(cmds, Command{
 			Args:    args,
-			Display: "npm " + strings.Join(args, " "),
-		})
-	}
-
-	if len(devPkgs) > 0 {
-		args := append([]string{"install", "--save-dev"}, devPkgs...)
-		cmds = append(cmds, Command{
-			Args:    args,
-			Display: "npm " + strings.Join(args, " "),
-			IsDev:   true,
+			Display: displayCommand(args),
+			IsDev:   g.dev,
 		})
 	}
 
 	return cmds
+}
+
+// displayCommand renders args for copy-pasting into a shell, quoting specs
+// with characters some shells treat specially (e.g. ^ in zsh extended glob).
+func displayCommand(args []string) string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		if strings.ContainsAny(a, "^~") {
+			a = "'" + a + "'"
+		}
+		quoted[i] = a
+	}
+	return "npm " + strings.Join(quoted, " ")
 }
 
 // PrintCommands displays the commands that would be run.

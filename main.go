@@ -200,6 +200,7 @@ func main() {
 			Name:          pkg.Name,
 			Installed:     pkg.Version.String(),
 			Available:     d.Available,
+			Range:         pkg.Range,
 			UpdateType:    d.UpdateType.String(),
 			IsDev:         pkg.IsDev,
 			Selectable:    true,

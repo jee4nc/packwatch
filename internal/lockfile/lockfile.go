@@ -15,7 +15,8 @@ type PackageInfo struct {
 	Name    string
 	Version semver.Version
 	IsDev   bool
-	InLock  bool // present in the lockfile
+	InLock  bool   // present in the lockfile
+	Range   string // range declared in package.json, e.g. "^1.2.3"
 }
 
 // ProjectEngines holds the engines constraint from package.json.
@@ -67,19 +68,19 @@ func Parse() (ParseResult, error) {
 	if err != nil {
 		return result, fmt.Errorf("cannot read package.json: %w", err)
 	}
-	var pkg packageJSON
-	if err := json.Unmarshal(pkgData, &pkg); err != nil {
+	var pkgJSON packageJSON
+	if err := json.Unmarshal(pkgData, &pkgJSON); err != nil {
 		return result, fmt.Errorf("cannot parse package.json: %w", err)
 	}
-	result.ProjectEngines = ProjectEngines{Node: pkg.Engines.Node}
+	result.ProjectEngines = ProjectEngines{Node: pkgJSON.Engines.Node}
 
 	// Build sets of dep names from package.json for classification
 	prodDeps := make(map[string]bool)
 	devDeps := make(map[string]bool)
-	for name := range pkg.Dependencies {
+	for name := range pkgJSON.Dependencies {
 		prodDeps[name] = true
 	}
-	for name := range pkg.DevDependencies {
+	for name := range pkgJSON.DevDependencies {
 		devDeps[name] = true
 	}
 
@@ -126,6 +127,7 @@ func Parse() (ParseResult, error) {
 				Version: v,
 				IsDev:   isDev && !isProd,
 				InLock:  true,
+				Range:   declaredRange(pkgJSON, name),
 			})
 		}
 	} else if lock.Dependencies != nil {
@@ -145,11 +147,21 @@ func Parse() (ParseResult, error) {
 				Version: v,
 				IsDev:   isDev && !isProd,
 				InLock:  true,
+				Range:   declaredRange(pkgJSON, name),
 			})
 		}
 	}
 
 	return result, nil
+}
+
+// declaredRange returns the range a dependency is declared with in
+// package.json; dependencies take precedence over devDependencies.
+func declaredRange(pkg packageJSON, name string) string {
+	if r, ok := pkg.Dependencies[name]; ok {
+		return r
+	}
+	return pkg.DevDependencies[name]
 }
 
 // extractPackageName gets the package name of a root-level install from a

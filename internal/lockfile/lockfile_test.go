@@ -86,6 +86,15 @@ func TestParseV3(t *testing.T) {
 		{"vitest", "1.6.0", true},
 	})
 
+	ranges := map[string]string{}
+	for _, p := range res.Packages {
+		ranges[p.Name] = p.Range
+	}
+	for name, want := range map[string]string{"express": "^4.18.0", "@scope/lib": "~1.2.0", "shared": "^1.0.0", "vitest": "^1.0.0"} {
+		if ranges[name] != want {
+			t.Errorf("%s Range = %q, want %q", name, ranges[name], want)
+		}
+	}
 }
 
 func TestParseWorkspaces(t *testing.T) {
