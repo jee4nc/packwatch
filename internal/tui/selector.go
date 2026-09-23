@@ -29,6 +29,7 @@ type Item struct {
 	NodeWarning   string
 	PeerWarning   string
 	CompatVersion string
+	RequiresWith  []string // packages that must be updated together with this one
 	VulnCount     int
 	VulnSeverity  string // highest severity: CRITICAL, HIGH, MEDIUM, LOW, UNKNOWN
 	VulnFixed     int
@@ -156,10 +157,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case " ", "tab":
 			if m.cursor < len(m.rows) && !m.rows[m.cursor].isHeader {
-				it := &m.items[m.rows[m.cursor].itemIdx]
-				if it.Selectable {
-					it.Selected = !it.Selected
-				}
+				idx := m.rows[m.cursor].itemIdx
+				m.setSelected(idx, !m.items[idx].Selected)
 			}
 
 		case "a":
@@ -175,6 +174,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.items[i].Selected = !allSelected
 				}
 			}
+			m.selectRequired()
 
 		case "p":
 			for i := range m.items {
@@ -182,6 +182,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.items[i].Selected = strings.ToLower(m.items[i].UpdateType) == "patch"
 				}
 			}
+			m.selectRequired()
 
 		case "m":
 			for i := range m.items {
@@ -190,6 +191,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.items[i].Selected = t == "patch" || t == "minor"
 				}
 			}
+			m.selectRequired()
 
 		case "v":
 			if m.cursor < len(m.rows) && !m.rows[m.cursor].isHeader {

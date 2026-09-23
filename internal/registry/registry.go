@@ -260,51 +260,45 @@ func candidate(pv PackageVersions, v semver.Version) bool {
 	return !pv.Deprecated[v.String()]
 }
 
-// FindCompatibleLatest finds the latest version that is compatible with the given Node version.
-// It walks versions from newest to oldest, checking the engines.node constraint.
-func FindCompatibleLatest(pv PackageVersions, nodeVersion semver.Version) (semver.Version, bool) {
+// FindLatest returns the newest suggestable version (not above "latest", not
+// deprecated) for which accept returns true.
+func FindLatest(pv PackageVersions, accept func(semver.Version) bool) (semver.Version, bool) {
 	for i := len(pv.Versions) - 1; i >= 0; i-- {
 		v := pv.Versions[i]
-		if !candidate(pv, v) {
-			continue
-		}
-		constraint, hasConstraint := pv.Engines[v.String()]
-		if !hasConstraint {
-			// No engine constraint means it's compatible
-			return v, true
-		}
-		if semver.SatisfiesConstraints(nodeVersion, constraint) {
+		if candidate(pv, v) && accept(v) {
 			return v, true
 		}
 	}
 	return semver.Version{}, false
 }
 
+// NodeCompatible reports whether version v declares no engines.node
+// constraint or one that the given Node version satisfies.
+func NodeCompatible(pv PackageVersions, v, nodeVersion semver.Version) bool {
+	constraint, has := pv.Engines[v.String()]
+	return !has || semver.SatisfiesConstraints(nodeVersion, constraint)
+}
+
+// FindCompatibleLatest finds the latest version that is compatible with the given Node version.
+// It walks versions from newest to oldest, checking the engines.node constraint.
+func FindCompatibleLatest(pv PackageVersions, nodeVersion semver.Version) (semver.Version, bool) {
+	return FindLatest(pv, func(v semver.Version) bool {
+		return NodeCompatible(pv, v, nodeVersion)
+	})
+}
+
 // FindPeerCompatibleLatest finds the latest version that satisfies both the Node engine
 // constraint and all given peer dependency constraints from other installed packages.
 func FindPeerCompatibleLatest(pv PackageVersions, nodeVersion semver.Version, peerConstraints []string) (semver.Version, bool) {
-	for i := len(pv.Versions) - 1; i >= 0; i-- {
-		v := pv.Versions[i]
-		if !candidate(pv, v) {
-			continue
+	return FindLatest(pv, func(v semver.Version) bool {
+		if !NodeCompatible(pv, v, nodeVersion) {
+			return false
 		}
-		// Check Node engine compatibility
-		if constraint, has := pv.Engines[v.String()]; has {
-			if !semver.SatisfiesConstraints(nodeVersion, constraint) {
-				continue
-			}
-		}
-		// Check all peer dependency constraints
-		allSatisfied := true
 		for _, constraint := range peerConstraints {
 			if !semver.SatisfiesConstraints(v, constraint) {
-				allSatisfied = false
-				break
+				return false
 			}
 		}
-		if allSatisfied {
-			return v, true
-		}
-	}
-	return semver.Version{}, false
+		return true
+	})
 }
