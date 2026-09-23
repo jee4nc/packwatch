@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,11 +25,13 @@ const (
 type PackageVersions struct {
 	Name     string
 	Latest   semver.Version
-	Versions []semver.Version            // all published versions, sorted ascending
-	Engines  map[string]string           // version string → node engines constraint
+	Versions []semver.Version             // all published versions, sorted ascending
+	Engines  map[string]string            // version string → node engines constraint
 	PeerDeps map[string]map[string]string // version string → peer dep name → constraint
-	Registry string                      // registry URL this was fetched from
-	Error    error
+	// Deprecated holds versions marked deprecated on the registry.
+	Deprecated map[string]bool
+	Registry   string // registry URL this was fetched from
+	Error      error
 }
 
 // registryResponse is the abbreviated metadata response.
@@ -41,6 +44,17 @@ type registryVersion struct {
 	Version          string            `json:"version"`
 	Engines          json.RawMessage   `json:"engines"`
 	PeerDependencies map[string]string `json:"peerDependencies"`
+	Deprecated       json.RawMessage   `json:"deprecated"`
+}
+
+// isDeprecated reports whether a raw "deprecated" field marks the version as
+// deprecated: registries set it to a message string; false/""/null mean not.
+func isDeprecated(raw json.RawMessage) bool {
+	switch strings.TrimSpace(string(raw)) {
+	case "", "false", `""`, "null":
+		return false
+	}
+	return true
 }
 
 // parseNodeEngine extracts the "node" engine constraint from a raw engines field.
@@ -111,11 +125,14 @@ func Fetch(names []string, npmrcCfg npmrc.Config, onProgress ProgressFunc) []Pac
 	return results
 }
 
+// fetchWithRetry retries only transient failures (network errors, 429, 5xx);
+// errors like 404 or 401 are returned immediately.
 func fetchWithRetry(client *http.Client, name, registryURL, authToken string) PackageVersions {
 	var result PackageVersions
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		result = fetchOne(client, name, registryURL, authToken)
-		if result.Error == nil {
+		var retryable bool
+		result, retryable = fetchOne(client, name, registryURL, authToken)
+		if result.Error == nil || !retryable {
 			return result
 		}
 		if attempt < maxRetries {
@@ -126,14 +143,31 @@ func fetchWithRetry(client *http.Client, name, registryURL, authToken string) Pa
 	return result
 }
 
-func fetchOne(client *http.Client, name, registryURL, authToken string) PackageVersions {
-	result := PackageVersions{Name: name, Engines: make(map[string]string), PeerDeps: make(map[string]map[string]string), Registry: registryURL}
+// escapeName encodes the scope separator like the npm CLI does
+// ("@scope/name" → "@scope%2fname"); some private registries require it.
+func escapeName(name string) string {
+	if strings.HasPrefix(name, "@") {
+		return strings.Replace(name, "/", "%2f", 1)
+	}
+	return name
+}
 
-	url := fmt.Sprintf("%s/%s", registryURL, name)
+// fetchOne fetches metadata for one package. The bool reports whether a
+// failure is transient and worth retrying.
+func fetchOne(client *http.Client, name, registryURL, authToken string) (PackageVersions, bool) {
+	result := PackageVersions{
+		Name:       name,
+		Engines:    make(map[string]string),
+		PeerDeps:   make(map[string]map[string]string),
+		Deprecated: make(map[string]bool),
+		Registry:   registryURL,
+	}
+
+	url := fmt.Sprintf("%s/%s", registryURL, escapeName(name))
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		result.Error = err
-		return result
+		return result, false
 	}
 	// Only use abbreviated metadata for the public npm registry.
 	// Private registries (JFrog, Artifactory, etc.) may not support it.
@@ -147,25 +181,25 @@ func fetchOne(client *http.Client, name, registryURL, authToken string) PackageV
 	resp, err := client.Do(req)
 	if err != nil {
 		result.Error = fmt.Errorf("request failed: %w", err)
-		return result
+		return result, true
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		result.Error = fmt.Errorf("HTTP %d for %s", resp.StatusCode, name)
-		return result
+		return result, resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		result.Error = fmt.Errorf("read body failed: %w", err)
-		return result
+		return result, true
 	}
 
 	var data registryResponse
 	if err := json.Unmarshal(body, &data); err != nil {
 		result.Error = fmt.Errorf("JSON decode failed: %w", err)
-		return result
+		return result, false
 	}
 
 	// Parse latest from dist-tags
@@ -193,12 +227,15 @@ func fetchOne(client *http.Client, name, registryURL, authToken string) PackageV
 		if len(verData.PeerDependencies) > 0 {
 			result.PeerDeps[v.String()] = verData.PeerDependencies
 		}
+		if isDeprecated(verData.Deprecated) {
+			result.Deprecated[v.String()] = true
+		}
 	}
 
 	// Sort versions ascending
 	sortVersions(result.Versions)
 
-	return result
+	return result, false
 }
 
 func sortVersions(versions []semver.Version) {
@@ -214,11 +251,23 @@ func sortVersions(versions []semver.Version) {
 	}
 }
 
+// candidate reports whether a version may be suggested at all: not above the
+// "latest" dist-tag (e.g. a release published under "next") and not deprecated.
+func candidate(pv PackageVersions, v semver.Version) bool {
+	if pv.Latest != (semver.Version{}) && pv.Latest.LessThan(v) {
+		return false
+	}
+	return !pv.Deprecated[v.String()]
+}
+
 // FindCompatibleLatest finds the latest version that is compatible with the given Node version.
 // It walks versions from newest to oldest, checking the engines.node constraint.
 func FindCompatibleLatest(pv PackageVersions, nodeVersion semver.Version) (semver.Version, bool) {
 	for i := len(pv.Versions) - 1; i >= 0; i-- {
 		v := pv.Versions[i]
+		if !candidate(pv, v) {
+			continue
+		}
 		constraint, hasConstraint := pv.Engines[v.String()]
 		if !hasConstraint {
 			// No engine constraint means it's compatible
@@ -236,6 +285,9 @@ func FindCompatibleLatest(pv PackageVersions, nodeVersion semver.Version) (semve
 func FindPeerCompatibleLatest(pv PackageVersions, nodeVersion semver.Version, peerConstraints []string) (semver.Version, bool) {
 	for i := len(pv.Versions) - 1; i >= 0; i-- {
 		v := pv.Versions[i]
+		if !candidate(pv, v) {
+			continue
+		}
 		// Check Node engine compatibility
 		if constraint, has := pv.Engines[v.String()]; has {
 			if !semver.SatisfiesConstraints(nodeVersion, constraint) {
