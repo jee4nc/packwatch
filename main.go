@@ -239,7 +239,7 @@ func main() {
 		}
 	}
 
-	// Security check (--health)
+	// Security check
 	vulnCount := 0
 	sevCounts := map[string]int{}
 	{
