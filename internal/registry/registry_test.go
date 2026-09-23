@@ -245,3 +245,97 @@ func mustParse(s string) semver.Version {
 	}
 	return v
 }
+
+func testConfig(url string) npmrc.Config {
+	return npmrc.Config{
+		DefaultRegistry: url,
+		ScopeRegistries: make(map[string]string),
+		AuthTokens:      make(map[string]string),
+	}
+}
+
+func TestFetch_NoRetryOnClientError(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusUnauthorized} {
+		attempts := int64(0)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt64(&attempts, 1)
+			w.WriteHeader(status)
+		}))
+
+		results := Fetch([]string{"missing"}, testConfig(server.URL), nil)
+		server.Close()
+
+		if results[0].Error == nil {
+			t.Errorf("HTTP %d: expected error", status)
+		}
+		if attempts != 1 {
+			t.Errorf("HTTP %d: got %d attempts, want 1 (no retry)", status, attempts)
+		}
+	}
+}
+
+func TestFetch_EscapesScopedName(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		json.NewEncoder(w).Encode(registryResponse{
+			DistTags: map[string]string{"latest": "1.0.0"},
+			Versions: map[string]registryVersion{"1.0.0": {Version: "1.0.0"}},
+		})
+	}))
+	defer server.Close()
+
+	results := Fetch([]string{"@scope/name"}, testConfig(server.URL), nil)
+	if results[0].Error != nil {
+		t.Fatalf("unexpected error: %v", results[0].Error)
+	}
+	if gotPath != "/@scope%2fname" {
+		t.Errorf("request path = %q, want /@scope%%2fname", gotPath)
+	}
+}
+
+func TestFetch_ParsesDeprecated(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{
+			"dist-tags": {"latest": "1.2.0"},
+			"versions": {
+				"1.0.0": {"version": "1.0.0", "deprecated": false},
+				"1.1.0": {"version": "1.1.0", "deprecated": "critical bug, use 1.2.0"},
+				"1.2.0": {"version": "1.2.0", "deprecated": ""}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	pv := Fetch([]string{"pkg"}, testConfig(server.URL), nil)[0]
+	if pv.Error != nil {
+		t.Fatalf("unexpected error: %v", pv.Error)
+	}
+	for v, want := range map[string]bool{"1.0.0": false, "1.1.0": true, "1.2.0": false} {
+		if pv.Deprecated[v] != want {
+			t.Errorf("Deprecated[%s] = %v, want %v", v, pv.Deprecated[v], want)
+		}
+	}
+}
+
+func TestFindCompatible_SkipsDeprecatedAndAboveLatest(t *testing.T) {
+	v18 := mustParse("18.0.0")
+	pv := PackageVersions{
+		Name:     "pkg",
+		Latest:   mustParse("2.0.0"),
+		Versions: []semver.Version{mustParse("1.0.0"), mustParse("1.1.0"), mustParse("2.0.0"), mustParse("3.0.0")},
+		Engines:  map[string]string{"2.0.0": ">=20"},
+		// 3.0.0 is published under another dist-tag (e.g. "next")
+		Deprecated: map[string]bool{"1.1.0": true},
+	}
+
+	got, ok := FindCompatibleLatest(pv, v18)
+	if !ok || got.String() != "1.0.0" {
+		t.Errorf("FindCompatibleLatest = %s, %v; want 1.0.0 (skips 3.0.0 above latest, 2.0.0 needs node 20, 1.1.0 deprecated)", got, ok)
+	}
+
+	got, ok = FindPeerCompatibleLatest(pv, mustParse("22.0.0"), []string{">=1"})
+	if !ok || got.String() != "2.0.0" {
+		t.Errorf("FindPeerCompatibleLatest = %s, %v; want 2.0.0 (capped at latest)", got, ok)
+	}
+}
