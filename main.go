@@ -19,6 +19,7 @@ import (
 	"github.com/jee4nc/packwatch/internal/styles"
 	"github.com/jee4nc/packwatch/internal/tui"
 	"github.com/jee4nc/packwatch/internal/unused"
+	"github.com/jee4nc/packwatch/internal/update"
 )
 
 // Set at build time via ldflags.
@@ -137,11 +138,7 @@ func main() {
 	// 5. Build reverse peer dependency map:
 	//    For each installed package, check what peer constraints it imposes on other packages.
 	//    This lets us warn when updating package A would break package B's peerDependencies.
-	type peerConstraint struct {
-		constraint string
-		source     string // package that imposes this constraint
-	}
-	peerConstraintMap := map[string][]peerConstraint{}
+	peerConstraintMap := map[string][]update.PeerConstraint{}
 
 	for i, pkg := range packages {
 		reg := registryResults[i]
@@ -153,9 +150,9 @@ func main() {
 			continue
 		}
 		for depName, constraint := range peers {
-			peerConstraintMap[depName] = append(peerConstraintMap[depName], peerConstraint{
-				constraint: constraint,
-				source:     pkg.Name,
+			peerConstraintMap[depName] = append(peerConstraintMap[depName], update.PeerConstraint{
+				Constraint: constraint,
+				Source:     pkg.Name,
 			})
 		}
 	}
@@ -163,6 +160,7 @@ func main() {
 	// 6. Build items list
 	var items []tui.Item
 	var errors []string
+	var heldBack []string
 	upToDateCount := 0
 
 	for i, pkg := range packages {
@@ -172,68 +170,17 @@ func main() {
 			continue
 		}
 
-		updateType := semver.ClassifyUpdate(pkg.Version, reg.Latest)
-		available := reg.Latest.String()
-		nodeWarning := ""
-		peerWarning := ""
-		compatVersion := ""
-
-		// Check if latest requires newer Node
-		if updateType != semver.UpToDate {
-			latestEngines, hasEngines := reg.Engines[reg.Latest.String()]
-			if hasEngines && !semver.SatisfiesConstraints(nodeDetection.Version, latestEngines) {
-				// Find compatible version
-				compat, found := registry.FindCompatibleLatest(reg, nodeDetection.Version)
-				if found && compat.Compare(pkg.Version) > 0 {
-					minNode, hasMin := semver.ExtractMinNodeVersion(latestEngines)
-					nodeWarning = fmt.Sprintf("latest (%s) requires Node >=%s; suggesting %s instead",
-						reg.Latest.String(), minNode.String(), compat.String())
-					if !hasMin {
-						nodeWarning = fmt.Sprintf("latest (%s) requires %s; suggesting %s instead",
-							reg.Latest.String(), latestEngines, compat.String())
-					}
-					available = compat.String()
-					compatVersion = compat.String()
-					updateType = semver.ClassifyUpdate(pkg.Version, compat)
-				} else if !found {
-					nodeWarning = fmt.Sprintf("no compatible version found for Node %s", nodeDetection.Version.String())
-					updateType = semver.UpToDate // can't update
+		d := update.Decide(pkg.Version, reg, nodeDetection.Version, peerConstraintMap[pkg.Name])
+		if d.HeldBack() {
+			var reasons []string
+			for _, w := range []string{d.NodeWarning, d.PeerWarning} {
+				if w != "" {
+					reasons = append(reasons, w)
 				}
 			}
+			heldBack = append(heldBack, fmt.Sprintf("%s: %s", pkg.Name, strings.Join(reasons, "; ")))
 		}
-
-		// Check peer dependency constraints from other installed packages
-		if updateType != semver.UpToDate {
-			if pcs, hasPeerConstraints := peerConstraintMap[pkg.Name]; hasPeerConstraints {
-				candidateVersion, _ := semver.Parse(available)
-				var conflictSources []string
-				for _, pc := range pcs {
-					if !semver.SatisfiesConstraints(candidateVersion, pc.constraint) {
-						conflictSources = append(conflictSources, pc.source)
-					}
-				}
-				if len(conflictSources) > 0 {
-					var constraints []string
-					for _, pc := range pcs {
-						constraints = append(constraints, pc.constraint)
-					}
-					compat, found := registry.FindPeerCompatibleLatest(reg, nodeDetection.Version, constraints)
-					if found && compat.Compare(pkg.Version) > 0 {
-						peerWarning = fmt.Sprintf("latest (%s) breaks peer deps of %s; suggesting %s instead",
-							available, strings.Join(conflictSources, ", "), compat.String())
-						available = compat.String()
-						compatVersion = compat.String()
-						updateType = semver.ClassifyUpdate(pkg.Version, compat)
-					} else if !found {
-						peerWarning = fmt.Sprintf("no compatible version found (peer deps: %s)",
-							strings.Join(conflictSources, ", "))
-						updateType = semver.UpToDate
-					}
-				}
-			}
-		}
-
-		if updateType == semver.UpToDate {
+		if d.UpdateType == semver.UpToDate {
 			upToDateCount++
 			continue
 		}
@@ -241,13 +188,13 @@ func main() {
 		items = append(items, tui.Item{
 			Name:          pkg.Name,
 			Installed:     pkg.Version.String(),
-			Available:     available,
-			UpdateType:    updateType.String(),
+			Available:     d.Available,
+			UpdateType:    d.UpdateType.String(),
 			IsDev:         pkg.IsDev,
 			Selectable:    true,
-			NodeWarning:   nodeWarning,
-			PeerWarning:   peerWarning,
-			CompatVersion: compatVersion,
+			NodeWarning:   d.NodeWarning,
+			PeerWarning:   d.PeerWarning,
+			CompatVersion: d.CompatVersion,
 		})
 	}
 
@@ -266,6 +213,17 @@ func main() {
 			styles.Yellow.Render(fmt.Sprintf("%d packages failed to fetch:", len(errors))))
 		for _, e := range errors {
 			fmt.Printf("    %s %s\n", styles.Gray.Render("•"), styles.Gray.Render(e))
+		}
+	}
+
+	// Report packages with newer versions blocked by Node/peer constraints
+	if len(heldBack) > 0 {
+		sort.Strings(heldBack)
+		fmt.Printf("\n  %s%s\n",
+			styles.Emoji("⏸  "),
+			styles.Yellow.Render(fmt.Sprintf("%d held back by Node/peer constraints:", len(heldBack))))
+		for _, h := range heldBack {
+			fmt.Printf("    %s %s\n", styles.Gray.Render("•"), styles.Gray.Render(h))
 		}
 	}
 
