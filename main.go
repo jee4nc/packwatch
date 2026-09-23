@@ -146,42 +146,34 @@ func main() {
 	})
 	fmt.Fprintln(out) // newline after progress bar
 
-	// 5. Build reverse peer dependency map:
-	//    For each installed package, check what peer constraints it imposes on other packages.
-	//    This lets us warn when updating package A would break package B's peerDependencies.
-	peerConstraintMap := map[string][]update.PeerConstraint{}
-
-	for i, pkg := range packages {
-		reg := registryResults[i]
-		if reg.Error != nil {
-			continue
-		}
-		peers, ok := reg.PeerDeps[pkg.Version.String()]
-		if !ok {
-			continue
-		}
-		for depName, constraint := range peers {
-			peerConstraintMap[depName] = append(peerConstraintMap[depName], update.PeerConstraint{
-				Constraint: constraint,
-				Source:     pkg.Name,
-			})
-		}
-	}
-
-	// 6. Build items list
+	// 5. Decide all packages together: Node engines, peer deps between direct
+	//    dependencies (in both directions) and packages that must move as a group.
 	var items []tui.Item
 	var errors []string
 	var heldBack []string
 	upToDateCount := 0
 
+	var planned []update.Package
+	var plannedInfo []lockfile.PackageInfo
 	for i, pkg := range packages {
 		reg := registryResults[i]
 		if reg.Error != nil {
 			errors = append(errors, fmt.Sprintf("%s: %v", pkg.Name, reg.Error))
 			continue
 		}
+		planned = append(planned, update.Package{Name: pkg.Name, Installed: pkg.Version, Registry: reg})
+		plannedInfo = append(plannedInfo, pkg)
+	}
 
-		d := update.Decide(pkg.Version, reg, nodeDetection.Version, peerConstraintMap[pkg.Name])
+	opts := update.Options{
+		Node:           nodeDetection.Version,
+		TypesNodeMajor: typesNodeMajor(nodeDetection.Version, parsed.ProjectEngines.Node),
+	}
+	decisions := update.Plan(planned, opts)
+
+	// 6. Build items list
+	for i, pkg := range plannedInfo {
+		d := decisions[i]
 		if d.HeldBack() {
 			var reasons []string
 			for _, w := range []string{d.NodeWarning, d.PeerWarning} {
@@ -196,6 +188,16 @@ func main() {
 			continue
 		}
 
+		peerWarning := d.PeerWarning
+		if len(d.RequiresWith) > 0 {
+			together := "update together with " + strings.Join(d.RequiresWith, ", ") + " (peer deps)"
+			if peerWarning == "" {
+				peerWarning = together
+			} else {
+				peerWarning += "; " + together
+			}
+		}
+
 		items = append(items, tui.Item{
 			Name:          pkg.Name,
 			Installed:     pkg.Version.String(),
@@ -205,8 +207,9 @@ func main() {
 			IsDev:         pkg.IsDev,
 			Selectable:    true,
 			NodeWarning:   d.NodeWarning,
-			PeerWarning:   d.PeerWarning,
+			PeerWarning:   peerWarning,
 			CompatVersion: d.CompatVersion,
+			RequiresWith:  d.RequiresWith,
 		})
 	}
 
@@ -341,8 +344,16 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Packages that must move together: add any partner the selection is missing
+	selected, added := tui.WithRequired(result.Selected, items)
+	for _, name := range added {
+		fmt.Fprintf(out, "  %s%s\n",
+			styles.Emoji("🔗 "),
+			styles.Yellow.Render(fmt.Sprintf("Also updating %s (required by peer deps of the selection)", name)))
+	}
+
 	// 8. Generate and show commands
-	cmds := runner.GenerateCommands(result.Selected)
+	cmds := runner.GenerateCommands(selected)
 	runner.PrintCommands(cmds)
 
 	// 9. Ask to execute
@@ -355,6 +366,18 @@ func main() {
 	} else {
 		fmt.Fprintf(out, "\n  %s Commands not executed. Copy and run them manually.\n", styles.Emoji("📋 "))
 	}
+}
+
+// typesNodeMajor returns the Node major @types/node should match: the
+// minimum major allowed by engines.node if declared (the code must run
+// there), otherwise the detected Node major.
+func typesNodeMajor(active semver.Version, engines string) int {
+	if engines != "" {
+		if minNode, ok := semver.ExtractMinNodeVersion(engines); ok && minNode.Major > 0 {
+			return minNode.Major
+		}
+	}
+	return active.Major
 }
 
 type jsonVuln struct {
@@ -374,6 +397,7 @@ type jsonItem struct {
 	NodeWarning     string     `json:"nodeWarning,omitempty"`
 	PeerWarning     string     `json:"peerWarning,omitempty"`
 	CompatVersion   string     `json:"compatVersion,omitempty"`
+	RequiresWith    []string   `json:"requiresWith,omitempty"`
 	VulnCount       int        `json:"vulnCount,omitempty"`
 	VulnSeverity    string     `json:"vulnSeverity,omitempty"`
 	VulnFixed       int        `json:"vulnFixedByUpdate,omitempty"`
@@ -401,6 +425,7 @@ func outputJSON(items []tui.Item, nodeVersion string) {
 			NodeWarning:   it.NodeWarning,
 			PeerWarning:   it.PeerWarning,
 			CompatVersion: it.CompatVersion,
+			RequiresWith:  it.RequiresWith,
 			VulnCount:     it.VulnCount,
 			VulnSeverity:  it.VulnSeverity,
 			VulnFixed:     it.VulnFixed,

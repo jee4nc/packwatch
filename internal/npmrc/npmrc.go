@@ -54,22 +54,25 @@ func (c Config) RegistryFor(pkgName string) string {
 }
 
 // AuthTokenFor returns the auth token for a given registry URL, if any.
+// Like npm, it tries the registry's host+path and then walks up the path one
+// segment at a time down to the bare host, so a token configured for
+// //host/artifactory/api/npm/ also applies to //host/artifactory/api/npm/repo/.
 func (c Config) AuthTokenFor(registryURL string) string {
 	u, err := url.Parse(registryURL)
-	if err != nil {
+	if err != nil || u.Host == "" {
 		return ""
 	}
-	// Try exact host+path match, then progressively shorter paths
-	hostPath := u.Host + u.Path
-	hostPath = strings.TrimSuffix(hostPath, "/")
-	if token, ok := c.AuthTokens[hostPath]; ok {
-		return token
+	key := strings.TrimSuffix(u.Host+u.Path, "/")
+	for {
+		if token, ok := c.AuthTokens[key]; ok {
+			return token
+		}
+		i := strings.LastIndex(key, "/")
+		if i == -1 {
+			return ""
+		}
+		key = key[:i]
 	}
-	// Try just host
-	if token, ok := c.AuthTokens[u.Host]; ok {
-		return token
-	}
-	return ""
 }
 
 // IsPrivateRegistry returns true if the registry URL is not the default npm registry.
