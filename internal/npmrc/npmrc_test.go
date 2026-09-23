@@ -88,3 +88,28 @@ func TestExpandEnvVars(t *testing.T) {
 		}
 	}
 }
+
+func TestAuthTokenForWalksUpPath(t *testing.T) {
+	cfg := Config{AuthTokens: map[string]string{
+		"company.jfrog.io/artifactory/api/npm":           "parent-token",
+		"company.jfrog.io/artifactory/api/npm/npm-local": "local-token",
+		"plain.example.com":                              "host-token",
+	}}
+	tests := map[string]string{
+		// exact path wins over parent
+		"https://company.jfrog.io/artifactory/api/npm/npm-local/": "local-token",
+		// sibling repo inherits the parent-path token (the JFrog case)
+		"https://company.jfrog.io/artifactory/api/npm/omega-npm/": "parent-token",
+		"https://company.jfrog.io/artifactory/api/npm/a/b/c":      "parent-token",
+		// no token above this path
+		"https://company.jfrog.io/artifactory/other/": "",
+		"https://plain.example.com/deep/path/":        "host-token",
+		"https://unknown.example.com/":                "",
+		"not a url":                                   "",
+	}
+	for reg, want := range tests {
+		if got := cfg.AuthTokenFor(reg); got != want {
+			t.Errorf("AuthTokenFor(%q) = %q, want %q", reg, got, want)
+		}
+	}
+}
