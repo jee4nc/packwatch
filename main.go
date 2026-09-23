@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -21,6 +22,10 @@ import (
 	"github.com/jee4nc/packwatch/internal/unused"
 	"github.com/jee4nc/packwatch/internal/update"
 )
+
+// out receives human-readable output. In --json mode it is stderr, so stdout
+// carries only the JSON document.
+var out io.Writer = os.Stdout
 
 // Set at build time via ldflags.
 var (
@@ -49,11 +54,14 @@ func main() {
 	}
 
 	styles.Init(*noColor)
+	if *jsonOut {
+		out = os.Stderr
+	}
 
 	// Banner
-	fmt.Println()
-	fmt.Println(styles.Banner.Render(styles.Emoji("📦 ") + "packwatch " + version))
-	fmt.Println()
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, styles.Banner.Render(styles.Emoji("📦 ")+"packwatch "+version))
+	fmt.Fprintln(out)
 
 	// --unused mode: detect unused dependencies and exit
 	if *unusedFlag {
@@ -67,7 +75,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  %s %s\n", styles.Emoji("❌ "), styles.Red.Render(err.Error()))
 		os.Exit(1)
 	}
-	fmt.Printf("  %sNode %s  %s\n",
+	fmt.Fprintf(out, "  %sNode %s  %s\n",
 		styles.Emoji("⬢  "),
 		styles.BoldGreen.Render(nodeDetection.Version.String()),
 		styles.Gray.Render("from "+nodeDetection.Source))
@@ -75,7 +83,7 @@ func main() {
 	// 2. Parse .npmrc for registry config
 	npmrcCfg := npmrc.Parse()
 	if summary := npmrcCfg.Summary(); summary != "" {
-		fmt.Printf("  %sRegistries: %s\n",
+		fmt.Fprintf(out, "  %sRegistries: %s\n",
 			styles.Emoji("🔗 "),
 			styles.Gray.Render(summary))
 	}
@@ -86,7 +94,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  %s %s\n", styles.Emoji("❌ "), styles.Red.Render(err.Error()))
 		os.Exit(1)
 	}
-	fmt.Printf("  %sLockfile v%d — %d direct dependencies\n",
+	fmt.Fprintf(out, "  %sLockfile v%d — %d direct dependencies\n",
 		styles.Emoji("🔒 "),
 		parsed.LockVersion,
 		len(parsed.Packages))
@@ -94,7 +102,7 @@ func main() {
 	// Check project engines constraint against active node
 	if parsed.ProjectEngines.Node != "" {
 		if !semver.SatisfiesConstraints(nodeDetection.Version, parsed.ProjectEngines.Node) {
-			fmt.Printf("  %s%s\n",
+			fmt.Fprintf(out, "  %s%s\n",
 				styles.Emoji("⚠️  "),
 				styles.BoldYellow.Render(fmt.Sprintf("engines.node requires %q but active Node is %s",
 					parsed.ProjectEngines.Node, nodeDetection.Version.String())))
@@ -114,7 +122,10 @@ func main() {
 	}
 
 	if len(packages) == 0 {
-		fmt.Printf("\n  %s No dependencies to check.\n", styles.Emoji("✅ "))
+		fmt.Fprintf(out, "\n  %s No dependencies to check.\n", styles.Emoji("✅ "))
+		if *jsonOut {
+			outputJSON(nil, nodeDetection.Version.String())
+		}
 		os.Exit(0)
 	}
 
@@ -124,16 +135,16 @@ func main() {
 		names[i] = p.Name
 	}
 
-	fmt.Printf("\n  %sChecking npm registry for %d packages...\n",
+	fmt.Fprintf(out, "\n  %sChecking npm registry for %d packages...\n",
 		styles.Emoji("🔍 "), len(names))
 
 	var mu sync.Mutex
 	registryResults := registry.Fetch(names, npmrcCfg, func(completed, total int) {
 		mu.Lock()
 		defer mu.Unlock()
-		fmt.Printf("\r%s", styles.ProgressBar(completed, total, 30))
+		fmt.Fprintf(out, "\r%s", styles.ProgressBar(completed, total, 30))
 	})
-	fmt.Println() // newline after progress bar
+	fmt.Fprintln(out) // newline after progress bar
 
 	// 5. Build reverse peer dependency map:
 	//    For each installed package, check what peer constraints it imposes on other packages.
@@ -208,22 +219,22 @@ func main() {
 
 	// Report errors
 	if len(errors) > 0 {
-		fmt.Printf("\n  %s%s\n",
+		fmt.Fprintf(out, "\n  %s%s\n",
 			styles.Emoji("⚠️  "),
 			styles.Yellow.Render(fmt.Sprintf("%d packages failed to fetch:", len(errors))))
 		for _, e := range errors {
-			fmt.Printf("    %s %s\n", styles.Gray.Render("•"), styles.Gray.Render(e))
+			fmt.Fprintf(out, "    %s %s\n", styles.Gray.Render("•"), styles.Gray.Render(e))
 		}
 	}
 
 	// Report packages with newer versions blocked by Node/peer constraints
 	if len(heldBack) > 0 {
 		sort.Strings(heldBack)
-		fmt.Printf("\n  %s%s\n",
+		fmt.Fprintf(out, "\n  %s%s\n",
 			styles.Emoji("⏸  "),
 			styles.Yellow.Render(fmt.Sprintf("%d held back by Node/peer constraints:", len(heldBack))))
 		for _, h := range heldBack {
-			fmt.Printf("    %s %s\n", styles.Gray.Render("•"), styles.Gray.Render(h))
+			fmt.Fprintf(out, "    %s %s\n", styles.Gray.Render("•"), styles.Gray.Render(h))
 		}
 	}
 
@@ -240,15 +251,15 @@ func main() {
 			})
 		}
 
-		fmt.Printf("\n  %sChecking security advisories for %d packages...\n",
+		fmt.Fprintf(out, "\n  %sChecking security advisories for %d packages...\n",
 			styles.Emoji("🛡️  "), len(queries))
 
 		secResults := security.Check(queries, func(completed, total int) {
 			mu.Lock()
 			defer mu.Unlock()
-			fmt.Printf("\r%s", styles.ProgressBar(completed, total, 30))
+			fmt.Fprintf(out, "\r%s", styles.ProgressBar(completed, total, 30))
 		})
-		fmt.Println()
+		fmt.Fprintln(out)
 
 		for i, sr := range secResults {
 			if sr.Error != nil {
@@ -282,8 +293,11 @@ func main() {
 	}
 
 	if updateCount == 0 && vulnCount == 0 {
-		fmt.Printf("\n  %s All %d packages are up-to-date!\n",
+		fmt.Fprintf(out, "\n  %s All %d packages are up-to-date!\n",
 			styles.Emoji("✅ "), upToDateCount)
+		if *jsonOut {
+			outputJSON(items, nodeDetection.Version.String())
+		}
 		os.Exit(0)
 	}
 
@@ -304,7 +318,7 @@ func main() {
 		}
 		summaryParts = append(summaryParts, vulnSummary)
 	}
-	fmt.Printf("\n  %s%s\n",
+	fmt.Fprintf(out, "\n  %s%s\n",
 		styles.Emoji("📊 "),
 		styles.Bold.Render(strings.Join(summaryParts, " · ")))
 
@@ -317,12 +331,12 @@ func main() {
 	// 7. Interactive TUI
 	result := tui.Run(items)
 	if result.Aborted {
-		fmt.Printf("\n  %s Cancelled.\n", styles.Emoji("👋 "))
+		fmt.Fprintf(out, "\n  %s Cancelled.\n", styles.Emoji("👋 "))
 		os.Exit(0)
 	}
 
 	if len(result.Selected) == 0 {
-		fmt.Printf("\n  %s Nothing selected.\n", styles.Emoji("🤷 "))
+		fmt.Fprintf(out, "\n  %s Nothing selected.\n", styles.Emoji("🤷 "))
 		os.Exit(0)
 	}
 
@@ -336,9 +350,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "\n  %s %s\n", styles.Emoji("❌ "), styles.Red.Render(err.Error()))
 			os.Exit(1)
 		}
-		fmt.Printf("\n  %s All done!\n", styles.Emoji("🎉 "))
+		fmt.Fprintf(out, "\n  %s All done!\n", styles.Emoji("🎉 "))
 	} else {
-		fmt.Printf("\n  %s Commands not executed. Copy and run them manually.\n", styles.Emoji("📋 "))
+		fmt.Fprintf(out, "\n  %s Commands not executed. Copy and run them manually.\n", styles.Emoji("📋 "))
 	}
 }
 
@@ -372,7 +386,7 @@ type jsonOutput struct {
 }
 
 func outputJSON(items []tui.Item, nodeVersion string) {
-	var pkgs []jsonItem
+	pkgs := []jsonItem{}
 	for _, it := range items {
 		if !it.Selectable && it.VulnCount == 0 {
 			continue
@@ -416,7 +430,7 @@ func outputJSON(items []tui.Item, nodeVersion string) {
 }
 
 func runUnusedMode(jsonOut bool) {
-	fmt.Printf("  %sScanning project for unused dependencies...\n",
+	fmt.Fprintf(out, "  %sScanning project for unused dependencies...\n",
 		styles.Emoji("🔍 "))
 
 	result, err := unused.Scan()
@@ -425,18 +439,21 @@ func runUnusedMode(jsonOut bool) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("  %sScanned %d files — %d direct dependencies\n",
+	fmt.Fprintf(out, "  %sScanned %d files — %d direct dependencies\n",
 		styles.Emoji("📂 "),
 		result.ScannedFiles,
 		result.Total)
 
 	if len(result.Unused) == 0 {
-		fmt.Printf("\n  %s All %d dependencies are in use!\n",
+		fmt.Fprintf(out, "\n  %s All %d dependencies are in use!\n",
 			styles.Emoji("✅ "), result.Total)
+		if jsonOut {
+			outputUnusedJSON(result)
+		}
 		os.Exit(0)
 	}
 
-	fmt.Printf("\n  %s%s\n",
+	fmt.Fprintf(out, "\n  %s%s\n",
 		styles.Emoji("📊 "),
 		styles.Bold.Render(fmt.Sprintf("%d unused dependencies found", len(result.Unused))))
 
@@ -457,12 +474,12 @@ func runUnusedMode(jsonOut bool) {
 	// Interactive selection
 	tuiResult := tui.RunUnused(items, result.Total, result.ScannedFiles)
 	if tuiResult.Aborted {
-		fmt.Printf("\n  %s Cancelled.\n", styles.Emoji("👋 "))
+		fmt.Fprintf(out, "\n  %s Cancelled.\n", styles.Emoji("👋 "))
 		os.Exit(0)
 	}
 
 	if len(tuiResult.Selected) == 0 {
-		fmt.Printf("\n  %s Nothing selected.\n", styles.Emoji("🤷 "))
+		fmt.Fprintf(out, "\n  %s Nothing selected.\n", styles.Emoji("🤷 "))
 		os.Exit(0)
 	}
 
@@ -476,10 +493,10 @@ func runUnusedMode(jsonOut bool) {
 			fmt.Fprintf(os.Stderr, "\n  %s %s\n", styles.Emoji("❌ "), styles.Red.Render(err.Error()))
 			os.Exit(1)
 		}
-		fmt.Printf("\n  %s %d unused dependencies removed!\n",
+		fmt.Fprintf(out, "\n  %s %d unused dependencies removed!\n",
 			styles.Emoji("🎉 "), len(tuiResult.Selected))
 	} else {
-		fmt.Printf("\n  %s Commands not executed. Copy and run them manually.\n", styles.Emoji("📋 "))
+		fmt.Fprintf(out, "\n  %s Commands not executed. Copy and run them manually.\n", styles.Emoji("📋 "))
 	}
 }
 
@@ -496,7 +513,7 @@ type jsonUnusedOutput struct {
 }
 
 func outputUnusedJSON(result unused.ScanResult) {
-	var pkgs []jsonUnusedPackage
+	pkgs := []jsonUnusedPackage{}
 	for _, p := range result.Unused {
 		pkgs = append(pkgs, jsonUnusedPackage{
 			Name:    p.Name,
